@@ -9,7 +9,7 @@ pub fn load_config() -> Result<DaemonConfig, config::ConfigError> {
         .set_default("socket_dir", "/run/firebox/sockets")?
         .set_default("log_level", "info")?
         // Optional config file
-        .add_source(File::with_name("/etc/firebox/config").required(false))
+        .add_source(File::with_name("/etc/firebox/config.yaml").required(false))
         // Environment overrides: FIREBOX_LISTEN_ADDR, etc.
         .add_source(Environment::with_prefix("FIREBOX").separator("_"))
         .build()?;

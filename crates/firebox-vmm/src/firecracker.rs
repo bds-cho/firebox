@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -7,7 +7,7 @@ use firebox_store::Vm;
 use http::Request;
 use hyper::body::Body;
 use hyper::Client;
-use hyperlocal::UnixConnector;
+use hyperlocal::{UnixConnector, Uri as UnixUri};
 use serde::Serialize;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -80,23 +80,21 @@ impl FirecrackerVmm {
         let connector = UnixConnector;
         let client: Client<UnixConnector> = Client::builder().build(connector);
 
-        // Construct base URI for this socket
-        // Format: http+unix://socket-path/endpoint
-        let base_url = format!("http+unix://{}", socket_path);
-
         // 1. Machine config
         let machine_cfg = MachineConfig {
             vcpu_count: vm.vcpus,
             mem_size_mib: vm.memory_mb,
         };
-        Self::send_config(&client, &base_url, "/machine-config", machine_cfg).await?;
+        info!("Configuring machine with {} vCPUs, {} MB memory", vm.vcpus, vm.memory_mb);
+        Self::send_config(&client, socket_path, "/machine-config", machine_cfg).await?;
 
         // 2. Boot source (kernel + hardcoded boot args)
         let boot_cfg = BootSource {
             kernel_image_path: vm.kernel.clone(),
             boot_args: "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
         };
-        Self::send_config(&client, &base_url, "/boot-source", boot_cfg).await?;
+        info!("Configuring boot source: {}", vm.kernel);
+        Self::send_config(&client, socket_path, "/boot-source", boot_cfg).await?;
 
         // 3. Root drive (rootfs)
         let drive_cfg = DriveConfig {
@@ -105,7 +103,8 @@ impl FirecrackerVmm {
             is_root_device: true,
             is_read_only: false,
         };
-        Self::send_config(&client, &base_url, "/drives/rootfs", drive_cfg).await?;
+        info!("Configuring root drive: {}", vm.rootfs);
+        Self::send_config(&client, socket_path, "/drives/rootfs", drive_cfg).await?;
 
         // 4. Network interface (if configured)
         if let Some(ref net_cfg) = vm.network {
@@ -114,14 +113,16 @@ impl FirecrackerVmm {
                 host_dev_name: net_cfg.tap_device.clone(),
                 guest_mac: net_cfg.mac.clone(),
             };
-            Self::send_config(&client, &base_url, "/network-interfaces/eth0", net_iface).await?;
+            info!("Configuring network interface on TAP device: {}", net_cfg.tap_device);
+            Self::send_config(&client, socket_path, "/network-interfaces/eth0", net_iface).await?;
         }
 
         // 5. Start the VM
         let action = InstanceAction {
             action_type: "InstanceStart".to_string(),
         };
-        Self::send_config(&client, &base_url, "/actions", action).await?;
+        info!("Starting VM instance");
+        Self::send_config(&client, socket_path, "/actions", action).await?;
 
         info!("VM configured and started successfully");
         Ok(())
@@ -130,16 +131,16 @@ impl FirecrackerVmm {
     /// Helper to send a PUT request with JSON body to Firecracker
     async fn send_config<T: Serialize>(
         client: &Client<UnixConnector>,
-        base_url: &str,
+        socket_path: &str,
         endpoint: &str,
         body: T,
     ) -> Result<(), VmmError> {
         let json_body = serde_json::to_string(&body)
             .map_err(|e| VmmError::SpawnFailed(format!("json serialization failed: {}", e)))?;
 
-        let url = format!("{}{}", base_url, endpoint);
+        let uri: http::Uri = UnixUri::new(socket_path, endpoint).into();
 
-        let req = Request::put(url)
+        let req = Request::put(uri)
             .header("Content-Type", "application/json")
             .body(Body::from(json_body))
             .map_err(|e| VmmError::SpawnFailed(format!("request build failed: {}", e)))?;
@@ -169,9 +170,12 @@ impl Vmm for FirecrackerVmm {
         info!(vm_id = %vm.id, socket_path, "Spawning Firecracker");
 
         // Spawn the Firecracker process
+        // Redirect stdout/stderr to null to prevent VM console appearing in daemon logs
         let child = Command::new(&self.firecracker_bin)
-            .arg("--socket-path")
+            .arg("--api-sock")
             .arg(socket_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| {
                 VmmError::SpawnFailed(format!("failed to spawn firecracker: {}", e))

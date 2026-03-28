@@ -42,13 +42,22 @@ impl<S: Store, V: Vmm> Core<S, V> {
     pub async fn create_vm(&self, config: VmConfig) -> Result<Vm, CoreError> {
         Self::validate(&config)?;
 
+        let kernel = std::fs::canonicalize(&config.kernel)
+            .map_err(|e| CoreError::Validation(format!("invalid kernel path: {e}")))?
+            .to_string_lossy()
+            .to_string();
+        let rootfs = std::fs::canonicalize(&config.rootfs)
+            .map_err(|e| CoreError::Validation(format!("invalid rootfs path: {e}")))?
+            .to_string_lossy()
+            .to_string();
+
         let id = config.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let vm = Vm {
             id: id.clone(),
             vcpus: config.vcpus,
             memory_mb: config.memory_mb,
-            kernel: config.kernel,
-            rootfs: config.rootfs,
+            kernel,
+            rootfs,
             network: config.network,
             status: VmStatus::Created,
             pid: None,
@@ -122,6 +131,9 @@ impl<S: Store, V: Vmm> Core<S, V> {
         if let Some(pid) = vm.pid {
             self.vmm.kill(pid).await?;
         }
+
+        let socket_path = self.socket_path(id);
+        let _ = std::fs::remove_file(&socket_path);
 
         let mut updated = vm;
         updated.status = VmStatus::Stopped;

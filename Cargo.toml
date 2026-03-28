@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/firebox-store",
+    "crates/firebox-vmm",
+    "crates/firebox-core",
+    "crates/firebox-api",
+    "crates/firebox-cli",
+]
+
+[workspace.dependencies]
+tokio        = { version = "1", features = ["full"] }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+uuid         = { version = "1", features = ["v4"] }
+thiserror    = "1"
+tracing      = "0.1"
+async-trait  = "0.1"
+
+firebox-store = { path = "crates/firebox-store" }
+firebox-vmm   = { path = "crates/firebox-vmm" }
+firebox-core  = { path = "crates/firebox-core" }
